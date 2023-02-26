@@ -1,0 +1,511 @@
+/*********
+  Rui Santos
+  Complete instructions at https://RandomNerdTutorials.com/esp32-wi-fi-manager-asyncwebserver/
+  
+  Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files.
+  The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+*********/
+
+/*****************
+By Juris Daksa
+******************/
+
+#include <Arduino.h>
+#include <WiFi.h>
+#include <ESPAsyncWebServer.h>
+#include <AsyncTCP.h>
+#include "SPIFFS.h"
+#include <ArduinoOTA.h>
+#include "Audio.h"
+#include "CSV_Parser.h"
+#include "ESPTelnet.h"
+#include "AiEsp32RotaryEncoder.h"
+
+// Create AsyncWebServer object on port 80
+AsyncWebServer server(80);
+
+// Search for parameter in HTTP POST request
+const char* PARAM_INPUT_1 = "ssid";
+const char* PARAM_INPUT_2 = "pass"; 
+const char* PARAM_INPUT_3 = "ip";
+
+// Acces Point name
+const char* apName = "WEBRADIO-SETUP";
+
+//Variables to save values from HTML form
+String ssid;
+String pass;
+String ip;
+
+// File paths to save input values permanently
+const char* ssidPath = "/ssid.txt";
+const char* passPath = "/pass.txt";
+const char* ipPath = "/ip.txt";
+const char* stationsPath = "/stations.csv";
+
+IPAddress localIP;
+//IPAddress localIP(192, 168, 1, 200); // hardcoded
+
+// Set your Gateway IP address
+IPAddress gateway(192, 168, 8, 1);
+IPAddress subnet(255, 255, 255, 0);
+
+// Timer variables
+unsigned long previousMillis = 0;
+const long interval = 10000;  // interval to wait for Wi-Fi connection (milliseconds)
+
+// I2S pinout & audio object for I2S communication
+#define I2S_BCLK      13
+#define I2S_DOUT      12
+#define I2S_LRC       14
+
+Audio audio;
+int defaultVolume = 17;
+int currentVolume = defaultVolume;
+
+char* streamTitle;
+
+// CSV parser for station reading
+CSV_Parser csv_parse("-ss");
+
+char** station_URLs;
+char** station_names;
+const int defaultStation = 1;
+int currentStation = 1;
+int stationCount = 0;
+bool isStationsLoaded = false;
+
+char cmd[130];                             // Command from MQTT or Serial
+
+#define ROTARY_ENCODER_A_PIN 19
+#define ROTARY_ENCODER_B_PIN 18
+#define ROTARY_ENCODER_BUTTON_PIN 23
+#define ROTARY_ENCODER_STEPS 4
+
+AiEsp32RotaryEncoder rotaryEncoder = AiEsp32RotaryEncoder(ROTARY_ENCODER_A_PIN, ROTARY_ENCODER_B_PIN, ROTARY_ENCODER_BUTTON_PIN, -1, ROTARY_ENCODER_STEPS);
+
+
+// Audio library functions
+void audio_info(const char *info){
+    Serial.print("info        "); Serial.println(info);
+}
+void audio_id3data(const char *info){  //id3 metadata
+    Serial.print("id3data     ");Serial.println(info);
+}
+void audio_eof_mp3(const char *info){  //end of file
+    Serial.print("eof_mp3     ");Serial.println(info);
+}
+void audio_showstation(const char *info){
+    Serial.print("station     ");Serial.println(info);
+}
+void audio_showstreamtitle(const char *info){
+    Serial.print("streamtitle ");
+    Serial.println(info);
+    streamTitle = (char*)info;
+}
+void audio_bitrate(const char *info){
+    Serial.print("bitrate     ");Serial.println(info);
+}
+void audio_commercial(const char *info){  //duration in sec
+    Serial.print("commercial  ");Serial.println(info);
+}
+void audio_icyurl(const char *info){  //homepage
+    Serial.print("icyurl      ");Serial.println(info);
+}
+void audio_lasthost(const char *info){  //stream URL played
+    Serial.print("lasthost    ");Serial.println(info);
+}
+void audio_eof_speech(const char *info){
+    Serial.print("eof_speech  ");Serial.println(info);
+}
+
+// Initialize SPIFFS
+void initSPIFFS() {
+  if (!SPIFFS.begin(true)) {
+    Serial.println("An error has occurred while mounting SPIFFS");
+  }
+  Serial.println("SPIFFS mounted successfully");
+}
+
+// Read File from SPIFFS
+String readFile(fs::FS &fs, const char * path){
+  Serial.printf("Reading file: %s\r\n", path);
+
+  File file = fs.open(path);
+  if(!file || file.isDirectory()){
+    Serial.println("- failed to open file for reading");
+    return String();
+  }
+  
+  String fileContent;
+  while(file.available()){
+    fileContent = file.readStringUntil('\n');
+    break;     
+  }
+  file.close();
+  return fileContent;
+}
+
+// Write file to SPIFFS
+void writeFile(fs::FS &fs, const char * path, const char * message){
+  Serial.printf("Writing file: %s\r\n", path);
+
+  File file = fs.open(path, FILE_WRITE);
+  if(!file){
+    Serial.println("- failed to open file for writing");
+    return;
+  }
+  if(file.print(message)){
+    Serial.println("- file written");
+  } else {
+    Serial.println("- frite failed");
+  }
+  file.close();
+
+}
+
+// Load stations from CSV file
+bool loadStationsFromCSV(fs::FS &fs, const char* path){
+  Serial.printf("Reading file: %s\r\n", path);
+  File file = fs.open(path);
+  if(!file || file.isDirectory()){
+    Serial.println("- failed to open file for reading");
+    return false;
+  }
+
+  while (file.available()) {
+    csv_parse << file.readStringUntil('\n').c_str();
+  }
+
+  file.close();
+  station_URLs = (char**)csv_parse["STATION_URL"];
+  station_names = (char**)csv_parse["STATION_NAME"];
+  stationCount = csv_parse.getRowsCount() - 1;
+  Serial.printf("Found %d stations: \r\n",stationCount);
+  for(int i = 1; i < csv_parse.getRowsCount(); i++){
+    char buff[64] = {0};
+    snprintf(buff,64, "%3d %10s %10s",i,station_names[i],station_URLs[i]);
+    Serial.println(buff);
+  }
+
+  Serial.println();
+
+  return true;
+}
+
+// Initialize WiFi
+bool initWiFi() {
+  if((ssid != NULL) && (ssid[0] == '\0')){
+    Serial.println("Undefined SSID.");
+    return false;
+  }
+  WiFi.mode(WIFI_STA);
+  if((ip != NULL) && (ip[0] != '\0')){
+    localIP.fromString(ip);
+    if (!WiFi.config(localIP, gateway, subnet)){
+      Serial.println("STA Failed to configure");
+      return false;
+    }
+  }
+
+  WiFi.begin(ssid.c_str(), pass.c_str());
+  Serial.println("Connecting to WiFi...");
+
+  unsigned long currentMillis = millis();
+  previousMillis = currentMillis;
+
+  while(WiFi.status() != WL_CONNECTED) {
+    currentMillis = millis();
+    if (currentMillis - previousMillis >= interval) {
+      Serial.println("Failed to connect.");
+      return false;
+    }
+  }
+
+  Serial.println(WiFi.localIP());
+  return true;
+}
+
+void webserverSetup_AP (){
+  // Connect to Wi-Fi network with SSID and password
+  Serial.println("Setting AP (Access Point)");
+  // NULL sets an open Access Point
+  WiFi.softAP(apName, NULL);
+
+  IPAddress IP = WiFi.softAPIP();
+  Serial.print("AP IP address: ");
+  Serial.println(IP); 
+
+  // Web Server Root URL
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(SPIFFS, "/wifimanager.html", "text/html");
+  });
+  
+  server.serveStatic("/", SPIFFS, "/");
+  
+  server.on("/", HTTP_POST, [](AsyncWebServerRequest *request) {
+    int params = request->params();
+    for(int i=0;i<params;i++){
+      AsyncWebParameter* p = request->getParam(i);
+      if(p->isPost()){
+        // HTTP POST ssid value
+        if (p->name() == PARAM_INPUT_1) {
+          ssid = (char*)p->value().c_str();
+          Serial.print("SSID set to: ");
+          Serial.println(ssid);
+          // Write file to save value
+          writeFile(SPIFFS, ssidPath, ssid.c_str());
+        }
+        // HTTP POST pass value
+        if (p->name() == PARAM_INPUT_2) {
+          pass = (char*)p->value().c_str();
+          Serial.print("Password set to: ");
+          Serial.println(pass);
+          // Write file to save value
+          writeFile(SPIFFS, passPath, pass.c_str());
+        }
+        // HTTP POST ip value
+        if (p->name() == PARAM_INPUT_3) {
+          ip = (char*)p->value().c_str();
+          Serial.print("IP Address set to: ");
+          Serial.println(ip);
+          // Write file to save value
+          writeFile(SPIFFS, ipPath, ip.c_str());
+        }
+        //Serial.printf("POST[%s]: %s\n", p->name().c_str(), p->value().c_str());
+      }
+    }
+    String ip_addr = ip;
+    request->send(200, "text/plain", "Done. ESP will restart, connect to your router and go to IP address: " + ip_addr);
+    delay(3000);
+    ESP.restart();
+  });
+  
+  server.begin();
+}
+
+void otaSetup(){
+
+  // Port defaults to 3232
+  // ArduinoOTA.setPort(3232);
+  // Hostname defaults to esp3232-[MAC]
+  // ArduinoOTA.setHostname("myesp32");
+  // No authentication by default
+  // ArduinoOTA.setPassword("admin");
+  // Password can be set with it's md5 value as well
+  // MD5(admin) = 21232f297a57a5a743894a0e4a801fc3
+  // ArduinoOTA.setPasswordHash("21232f297a57a5a743894a0e4a801fc3");
+  ArduinoOTA
+      .onStart([]() {
+      String type;
+      if (ArduinoOTA.getCommand() == U_FLASH)
+          type = "sketch";
+      else // U_SPIFFS
+          type = "filesystem";
+      // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
+      Serial.println("Start updating " + type);
+      })
+      .onEnd([]() {
+      Serial.println("\nEnd");
+      })
+      .onProgress([](unsigned int progress, unsigned int total) {
+      Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+      })
+      .onError([](ota_error_t error) {
+      Serial.printf("Error[%u]: ", error);
+      if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+      else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+      else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+      else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+      else if (error == OTA_END_ERROR) Serial.println("End Failed");
+      });
+
+  ArduinoOTA.begin();
+}
+
+void proccessInput(String &str){
+  int inx;
+  if((inx = str.indexOf("#")) >= 0){
+    str.remove(inx);
+  }
+  str.trim();
+}
+
+const char* proccessVolume(int step){
+  if (step < 0 && currentVolume > 0){
+    audio.setVolume(currentVolume - 1);
+  }
+
+  if (step > 0 && currentVolume < 21){
+    audio.setVolume(currentVolume + 1);
+  }
+
+  const char* reply = "Volume is now " + currentVolume;
+
+  return reply;
+}
+
+const char* proccessCommand(const char* commandArgument, const char* commandValue){
+  String argument;
+  String value;
+  int int_value;
+  static char reply[180];
+  int oldVolume;
+  String tmpValue;
+  
+  strcpy(reply,"Command accepted");
+  argument = String(commandArgument);
+  proccessInput(argument);
+  if(argument.length() == 0) return reply;
+  argument.toLowerCase();
+  
+  value = String(commandValue);
+  proccessInput(value);
+  int_value = value.toInt();
+  int_value = abs(int_value);
+  if (value.length()){
+    tmpValue = value;
+    Serial.println("Command \"" + argument + "\" with value \"" + value + "\"");
+  } else {
+    Serial.println("Command \"" + argument + "\" without value");
+  }
+
+  if (argument.indexOf("volume") == 0){
+    if (value.indexOf("up") == 0){
+      return proccessVolume(1);
+    }
+    
+    if (value.indexOf("down") == 0){
+      return proccessVolume(-1);
+    }
+
+    if (int_value >= 0 && int_value <= 21){
+      audio.setVolume(int_value);
+      sprintf(reply, "Volume is now %d", audio.getVolume());
+      
+      return reply;
+    }
+  }
+
+  if (argument.indexOf("preset") == 0){
+    int oldStation = currentStation;
+    if (value.indexOf("up") == 0){
+      currentStation = (oldStation < stationCount ? oldStation + 1 : 1);
+    } else if (value.indexOf("down") == 0){
+      currentStation = (oldStation == 1 ? stationCount : oldStation - 1);
+    } else if (int_value >= 1 && int_value <= stationCount){
+      currentStation = int_value;
+    }
+    audio.connecttohost(station_URLs[currentStation]);
+    sprintf(reply, "Preset set to %d. %s", currentStation, station_names[currentStation]);
+    return reply;
+  }
+
+  return reply;
+}
+
+const char* proccessCommand(const char* str){
+  char* value;
+  const char* result;
+
+  value = strstr(str, "=");
+  if (value){
+    *value = '\0';
+    result = proccessCommand(str, value + 1);
+    *value = '=';
+  }else{
+    result = proccessCommand(str, "0");
+  }
+
+  return result;
+}
+
+void scanSerial(){
+  static String serialCmd;
+  char c;
+  const char* reply = "";
+  uint16_t length;
+
+  while(Serial.available()){
+    c = (char)Serial.read();
+    length = serialCmd.length();
+    if((c == '\n') || (c == '\r')){
+      if (length){
+        strncpy(cmd, serialCmd.c_str(), sizeof(cmd));
+        reply = proccessCommand(cmd);
+        Serial.println(reply);
+        serialCmd = "";
+      }
+    }
+
+    if (c >= ' '){
+      serialCmd += c;
+    }
+
+    if (length >= (sizeof(cmd) - 2)){
+      serialCmd = "";
+    }
+  }
+}
+
+void rotary_onButtonClick()
+{
+  static unsigned long lastTimePressed = 0;
+  if (millis() - lastTimePressed < 200)
+    return;
+  lastTimePressed = millis();
+  int oldStation = currentStation;
+  currentStation = (oldStation < stationCount ? oldStation + 1 : 1);
+  audio.connecttohost(station_URLs[currentStation]);
+}
+
+void IRAM_ATTR readEncoderISR()
+{
+    rotaryEncoder.readEncoder_ISR();
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
+  audio.setVolume(defaultVolume); // 0...21
+
+  rotaryEncoder.begin();
+  rotaryEncoder.setup(readEncoderISR);
+  rotaryEncoder.setBoundaries(0, 21, false); //minValue, maxValue, circleValues true|false (when max go to min and vice versa)
+  rotaryEncoder.setAcceleration(50);
+  rotaryEncoder.setEncoderValue(defaultVolume);
+
+  initSPIFFS();   
+  ssid = readFile(SPIFFS, ssidPath);
+  pass = readFile(SPIFFS, passPath);
+  ip = readFile(SPIFFS, ipPath);
+  isStationsLoaded = loadStationsFromCSV(SPIFFS, stationsPath);
+
+  if (initWiFi()){
+    otaSetup();
+    audio.connecttohost(isStationsLoaded? station_URLs[defaultStation]:"live.pieci.lv/live19-hq.mp3");
+  }else{
+    webserverSetup_AP();
+  }
+  
+  Serial.println("\n--- END OF SETUP ---\n");
+}
+
+void loop() {
+  audio.loop();
+  ArduinoOTA.handle();
+  scanSerial();
+
+  if (rotaryEncoder.encoderChanged())
+  {
+    currentVolume = rotaryEncoder.readEncoder();
+    audio.setVolume(currentVolume);
+  }
+  
+  if (rotaryEncoder.isEncoderButtonClicked())
+  {
+    rotary_onButtonClick();
+  } 
+}
+

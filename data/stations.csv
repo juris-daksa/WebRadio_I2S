@@ -1,0 +1,20 @@
+NR,STATION_URL,STATION_NAME
+0,null,null
+1,lr1mp1.latvijasradio.lv:8012,LATVIJAS RADIO 1
+2,lr2mp1.latvijasradio.lv:8002,LATVIJAS RADIO 2
+3,87.110.219.34:8000/swhmp3,RADIO SWH
+4,87.110.219.34:8000/rockmp3,RADIO SWH ROCK
+5,80.70.18.18:8000,KURZEMES RADIO
+6,nabamp0.latvijasradio.lv:8008,RADIO NABA
+7,live.pieci.lv/live19-hq.mp3,LATVIJAS RADIO 5
+8,listen-nme.sharp-stream.com/nme2.mp3,NME 2
+9,live.pieci.lv/live7-hq.mp3,LR5 LATVIESI
+10,195.13.253.51:8000/128_mp3,Latgolys Radeja
+11,stream.radiotev.lv:8002/radiov,RADIO TEV
+12,skonto.datucentrs.eu/mp3,Radio Skonto
+13,rietumi.ambero.lv:8000/stream/1/file.mp3,Rietumu Radio
+14,radio.kuums.lv:5555/stream.mp3,TALSI LOUNGE
+15,80.232.162.149:8000/gold96mp3,RADIO SWH GOLD
+16,live.radionemiers.lv/nemiers.aac,NEMIERS
+17,https://icecast.lyl.live/live,LYL RADIO
+18,https://stream.palanga.live:8443/palanga128.mp3,PALANGA STREET RADIO
