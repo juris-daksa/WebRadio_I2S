@@ -63,8 +63,6 @@ Audio audio;
 int defaultVolume = 17;
 int currentVolume = defaultVolume;
 
-char* streamTitle;
-
 // CSV parser for station reading
 CSV_Parser csv_parse("-ss");
 
@@ -75,7 +73,8 @@ int currentStation = 1;
 int stationCount = 0;
 bool isStationsLoaded = false;
 
-char cmd[130];                             // Command from MQTT or Serial
+// Command from Serial
+char cmd[130];
 
 #define ROTARY_ENCODER_A_PIN 19
 #define ROTARY_ENCODER_B_PIN 18
@@ -83,7 +82,6 @@ char cmd[130];                             // Command from MQTT or Serial
 #define ROTARY_ENCODER_STEPS 4
 
 AiEsp32RotaryEncoder rotaryEncoder = AiEsp32RotaryEncoder(ROTARY_ENCODER_A_PIN, ROTARY_ENCODER_B_PIN, ROTARY_ENCODER_BUTTON_PIN, -1, ROTARY_ENCODER_STEPS);
-
 
 // Audio library functions
 void audio_info(const char *info){
@@ -101,7 +99,6 @@ void audio_showstation(const char *info){
 void audio_showstreamtitle(const char *info){
     Serial.print("streamtitle ");
     Serial.println(info);
-    streamTitle = (char*)info;
 }
 void audio_bitrate(const char *info){
     Serial.print("bitrate     ");Serial.println(info);
@@ -124,6 +121,7 @@ void initSPIFFS() {
   if (!SPIFFS.begin(true)) {
     Serial.println("An error has occurred while mounting SPIFFS");
   }
+
   Serial.println("SPIFFS mounted successfully");
 }
 
@@ -142,7 +140,9 @@ String readFile(fs::FS &fs, const char * path){
     fileContent = file.readStringUntil('\n');
     break;     
   }
+
   file.close();
+
   return fileContent;
 }
 
@@ -155,13 +155,14 @@ void writeFile(fs::FS &fs, const char * path, const char * message){
     Serial.println("- failed to open file for writing");
     return;
   }
+
   if(file.print(message)){
     Serial.println("- file written");
   } else {
     Serial.println("- frite failed");
   }
-  file.close();
 
+  file.close();
 }
 
 // Load stations from CSV file
@@ -199,6 +200,7 @@ bool initWiFi() {
     Serial.println("Undefined SSID.");
     return false;
   }
+
   WiFi.mode(WIFI_STA);
   if((ip != NULL) && (ip[0] != '\0')){
     localIP.fromString(ip);
@@ -223,6 +225,7 @@ bool initWiFi() {
   }
 
   Serial.println(WiFi.localIP());
+
   return true;
 }
 
@@ -256,6 +259,7 @@ void webserverSetup_AP (){
           // Write file to save value
           writeFile(SPIFFS, ssidPath, ssid.c_str());
         }
+
         // HTTP POST pass value
         if (p->name() == PARAM_INPUT_2) {
           pass = (char*)p->value().c_str();
@@ -264,6 +268,7 @@ void webserverSetup_AP (){
           // Write file to save value
           writeFile(SPIFFS, passPath, pass.c_str());
         }
+
         // HTTP POST ip value
         if (p->name() == PARAM_INPUT_3) {
           ip = (char*)p->value().c_str();
@@ -272,9 +277,9 @@ void webserverSetup_AP (){
           // Write file to save value
           writeFile(SPIFFS, ipPath, ip.c_str());
         }
-        //Serial.printf("POST[%s]: %s\n", p->name().c_str(), p->value().c_str());
       }
     }
+
     String ip_addr = ip;
     request->send(200, "text/plain", "Done. ESP will restart, connect to your router and go to IP address: " + ip_addr);
     delay(3000);
@@ -287,14 +292,14 @@ void webserverSetup_AP (){
 void otaSetup(){
 
   // Port defaults to 3232
-  // ArduinoOTA.setPort(3232);
+  ArduinoOTA.setPort(3232);
   // Hostname defaults to esp3232-[MAC]
-  // ArduinoOTA.setHostname("myesp32");
+  ArduinoOTA.setHostname("myesp32");
   // No authentication by default
-  // ArduinoOTA.setPassword("admin");
+  ArduinoOTA.setPassword("admin");
   // Password can be set with it's md5 value as well
   // MD5(admin) = 21232f297a57a5a743894a0e4a801fc3
-  // ArduinoOTA.setPasswordHash("21232f297a57a5a743894a0e4a801fc3");
+  ArduinoOTA.setPasswordHash("21232f297a57a5a743894a0e4a801fc3");
   ArduinoOTA
       .onStart([]() {
       String type;
@@ -328,6 +333,7 @@ void proccessInput(String &str){
   if((inx = str.indexOf("#")) >= 0){
     str.remove(inx);
   }
+
   str.trim();
 }
 
@@ -356,7 +362,10 @@ const char* proccessCommand(const char* commandArgument, const char* commandValu
   strcpy(reply,"Command accepted");
   argument = String(commandArgument);
   proccessInput(argument);
-  if(argument.length() == 0) return reply;
+  if(argument.length() == 0){
+    return reply;
+  }
+
   argument.toLowerCase();
   
   value = String(commandValue);
@@ -396,6 +405,7 @@ const char* proccessCommand(const char* commandArgument, const char* commandValu
     } else if (int_value >= 1 && int_value <= stationCount){
       currentStation = int_value;
     }
+
     audio.connecttohost(station_URLs[currentStation]);
     sprintf(reply, "Preset set to %d. %s", currentStation, station_names[currentStation]);
     return reply;
@@ -451,8 +461,10 @@ void scanSerial(){
 void rotary_onButtonClick()
 {
   static unsigned long lastTimePressed = 0;
-  if (millis() - lastTimePressed < 200)
+  if (millis() - lastTimePressed < 200){
     return;
+  }
+  
   lastTimePressed = millis();
   int oldStation = currentStation;
   currentStation = (oldStation < stationCount ? oldStation + 1 : 1);
