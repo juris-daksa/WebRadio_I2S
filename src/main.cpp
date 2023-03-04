@@ -20,6 +20,8 @@ By Juris Daksa
 #include "CSV_Parser.h"
 #include "ESPTelnet.h"
 #include "AiEsp32RotaryEncoder.h"
+#include <U8g2lib.h>
+#include <Wire.h>
 
 // Create AsyncWebServer object on port 80
 AsyncWebServer server(80);
@@ -83,6 +85,13 @@ char cmd[130];
 
 AiEsp32RotaryEncoder rotaryEncoder = AiEsp32RotaryEncoder(ROTARY_ENCODER_A_PIN, ROTARY_ENCODER_B_PIN, ROTARY_ENCODER_BUTTON_PIN, -1, ROTARY_ENCODER_STEPS);
 
+U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+u8g2_uint_t offset;			// current offset for the scrolling text
+u8g2_uint_t width;			// pixel width of the scrolling text (must be lesser than 128 unless U8G2_16BIT is defined
+String text = "sup ";	// scroll this text from right to left
+unsigned long screenUpdate = 0;
+
 // Audio library functions
 void audio_info(const char *info){
     Serial.print("info        "); Serial.println(info);
@@ -99,6 +108,7 @@ void audio_showstation(const char *info){
 void audio_showstreamtitle(const char *info){
     Serial.print("streamtitle ");
     Serial.println(info);
+    text = info;
 }
 void audio_bitrate(const char *info){
     Serial.print("bitrate     ");Serial.println(info);
@@ -464,7 +474,7 @@ void rotary_onButtonClick()
   if (millis() - lastTimePressed < 200){
     return;
   }
-  
+
   lastTimePressed = millis();
   int oldStation = currentStation;
   currentStation = (oldStation < stationCount ? oldStation + 1 : 1);
@@ -475,6 +485,7 @@ void IRAM_ATTR readEncoderISR()
 {
     rotaryEncoder.readEncoder_ISR();
 }
+
 
 void setup() {
   Serial.begin(115200);
@@ -487,6 +498,12 @@ void setup() {
   rotaryEncoder.setBoundaries(0, 21, false); //minValue, maxValue, circleValues true|false (when max go to min and vice versa)
   rotaryEncoder.setAcceleration(50);
   rotaryEncoder.setEncoderValue(defaultVolume);
+
+  u8g2.begin();
+  u8g2.setFont(u8g2_font_profont12_tr );		// draw the current pixel width
+  u8g2.setFontMode(0);		// enable transparent mode, which is faster
+
+
 
   initSPIFFS();   
   ssid = readFile(SPIFFS, ssidPath);
@@ -519,5 +536,46 @@ void loop() {
   {
     rotary_onButtonClick();
   } 
+
+  if (screenUpdate < millis()){
+    u8g2_uint_t x;
+    u8g2.setFont(u8g2_font_inb16_mr);		// set the target font
+    const char *char_text = text.c_str();
+    width = u8g2.getUTF8Width(char_text);
+    u8g2.firstPage();
+    do {
+      // draw the scrolling text at current offset
+      x = offset;
+      u8g2.setFont(u8g2_font_inb16_mr);		// set the target font
+      do {								// repeated drawing of the scrolling text...
+        u8g2.drawUTF8(x, 30, char_text);			// draw the scolling text
+        x += width +15;						// add the pixel width of the scrolling text
+      } while( x < u8g2.getDisplayWidth() );		// draw again until the complete display is filled
+
+
+    u8g2.setFont(u8g2_font_profont12_tr );		// draw the current pixel width
+    u8g2.setCursor(0, 56);
+    u8g2.print("ST> ");
+    if (currentStation < 10) u8g2.print(0);
+    u8g2.print(currentStation);
+    u8g2.setCursor(50, 56);
+    u8g2.print("VOL> ");
+    if (currentVolume < 10){
+      u8g2.print(0);
+    }
+    u8g2.print(currentVolume); 
+    u8g2.setCursor(0, 44);
+    u8g2.print("                      ");
+    u8g2.setCursor(0, 44);
+    u8g2.print(station_names[currentStation]);					// this value must be lesser than 128 unless U8G2_16BIT is set
+
+    } while ( u8g2.nextPage() );
+    
+    offset-= 6;							// scroll by one pixel
+    if ( (u8g2_uint_t)offset < (u8g2_uint_t)-width )	
+      offset = 0;							// start over again
+    screenUpdate = millis() + 200;
+  }
+
 }
 
